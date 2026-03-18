@@ -1,0 +1,217 @@
+import React, { createContext, useState, useContext, useMemo, useEffect } from 'react';
+import { supabase } from '../lib/services/supabase';
+const CrmContext = createContext();
+
+export const useCrm = () => {
+    return useContext(CrmContext);
+};
+
+export const CrmProvider = ({ children }) => {
+    // 1. Finance State
+    const [transactions, setTransactions] = useState([]);
+
+    // 2. Kanban Deals/Leads State
+    const [boardData, setBoardData] = useState({
+        columns: [
+            { id: 'new', title: 'Novos Leads', color: '#3B82F6' },
+            { id: 'contacted', title: 'Contatados', color: '#F59E0B' },
+            { id: 'negotiation', title: 'Em Negociação', color: '#8B5CF6' },
+            { id: 'closed', title: 'Fechados/Ganhos', color: '#10B981' },
+            { id: 'lost', title: 'Perdidos', color: '#EF4444' }
+        ],
+        cards: []
+    });
+
+    // 3. System Logs (Recent Activities)
+    const [activities, setActivities] = useState([]);
+
+    const logActivity = (action, target) => {
+        const time = `Hoje, ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+        setActivities(prev => [{ id: Date.now(), time, user: 'Você', action, target }, ...prev].slice(0, 10)); // keep last 10
+    };
+
+    // --- SUPABASE INTEGRATION ---
+    const STATUS_MAP = {
+        'new': 'novo',
+        'contacted': 'contato',
+        'negotiation': 'negociacao',
+        'closed': 'fechado',
+        'lost': 'perdido'
+    };
+    const COL_MAP = {
+        'novo': 'new',
+        'contato': 'contacted',
+        'negociacao': 'negotiation',
+        'fechado': 'closed',
+        'perdido': 'lost'
+    };
+
+    const fetchLeads = async () => {
+        const { data, error } = await supabase.from('leads').select('*').order('created_at', { ascending: false });
+        if (data) {
+            setBoardData(prev => ({
+                ...prev,
+                cards: data.map(lead => ({
+                    id: lead.id,
+                    columnId: COL_MAP[lead.status] || 'new',
+                    name: lead.nome || '',
+                    company: lead.empresa || '',
+                    phone: lead.telefone || '',
+                    email: lead.email || '',
+                    cnpj: lead.cnpj || '',
+                    notes: lead.tipo_negocio || '',
+                    date: lead.created_at ? new Date(lead.created_at).toLocaleDateString('pt-BR', { day: '2-digit', month: 'short', year: 'numeric' }) : new Date().toLocaleDateString('pt-BR'),
+                    value: 0
+                }))
+            }));
+        } else if (error) {
+            console.error("Erro ao buscar leads:", error.message);
+        }
+    };
+
+    useEffect(() => {
+        fetchLeads();
+
+        const leadsSubscription = supabase
+            .channel('custom-all-channel')
+            .on(
+                'postgres_changes',
+                { event: '*', schema: 'public', table: 'leads' },
+                (payload) => {
+                    console.log('Realtime DB Change:', payload);
+                    fetchLeads();
+                }
+            )
+            .subscribe();
+
+        return () => {
+            supabase.removeChannel(leadsSubscription);
+        };
+    }, []);
+
+    const updateLeadStatusDb = async (leadId, newColumnId) => {
+        const statusName = STATUS_MAP[newColumnId] || 'novo';
+        const { error } = await supabase.from('leads').update({ status: statusName }).eq('id', leadId);
+        if (error) console.error("Erro ao atualizar status do lead:", error);
+    };
+    // ---------------------------
+
+    // Actions
+    const addTransaction = (trx) => {
+        setTransactions(prev => [trx, ...prev]);
+        logActivity('registrou uma nova transação', `de R$ ${trx.amount}`);
+    };
+
+    const updateBoardData = (newData, draggedCardId, targetColumnId) => {
+        setBoardData(newData);
+        if (draggedCardId && targetColumnId) {
+            updateLeadStatusDb(draggedCardId, targetColumnId);
+            logActivity('moveu o lead no funil', '');
+        }
+    };
+
+    const addLead = async (lead) => {
+        // Optimistic UI updates avoid waiting for network
+        setBoardData(prev => ({
+            ...prev,
+            cards: [lead, ...prev.cards]
+        }));
+        logActivity('adicionou o lead', lead.name);
+
+        const { error } = await supabase.from('leads').insert([{
+            nome: lead.name,
+            telefone: lead.phone,
+            empresa: lead.company,
+            tipo_negocio: lead.notes,
+            status: STATUS_MAP[lead.columnId] || 'novo',
+            email: lead.email || null,
+            cnpj: lead.cnpj || null
+        }]);
+        if (error) console.error("Erro ao inserir lead no Supabase:", error);
+
+        // Refresh to get actual UUIDs from DB instead of temporary frontend IDs
+        setTimeout(fetchLeads, 500);
+    };
+
+    const updateLead = async (updatedLead) => {
+        setBoardData(prev => ({
+            ...prev,
+            cards: prev.cards.map(c => c.id === updatedLead.id ? updatedLead : c)
+        }));
+        logActivity('editou o lead', updatedLead.name);
+
+        // Se a ID for númerica ou string simples, é temporary ou se já esteva no BD, tenta update
+        if (typeof updatedLead.id === 'number' || (typeof updatedLead.id === 'string' && updatedLead.id.length > 20)) {
+            const { error } = await supabase.from('leads').update({
+                nome: updatedLead.name,
+                telefone: updatedLead.phone,
+                empresa: updatedLead.company,
+                tipo_negocio: updatedLead.notes,
+                status: STATUS_MAP[updatedLead.columnId] || 'novo',
+                email: updatedLead.email || null,
+                cnpj: updatedLead.cnpj || null
+            }).eq('id', updatedLead.id);
+            if (error) console.error("Erro ao atualizar lead:", error);
+        }
+    };
+
+    const deleteLead = async (leadId) => {
+        const leadName = boardData.cards.find(c => c.id === leadId)?.name;
+        setBoardData(prev => ({
+            ...prev,
+            cards: prev.cards.filter(c => c.id !== leadId)
+        }));
+        if (leadName) logActivity('excluiu o lead', leadName);
+
+        // Delete in supabase
+        const { error } = await supabase.from('leads').delete().eq('id', leadId);
+        if (error) console.error("Erro deletando lead", error);
+    };
+
+    const deleteTransaction = (trxId) => {
+        setTransactions(prev => prev.filter(t => t.id !== trxId));
+        logActivity('excluiu uma transação', trxId);
+    };
+
+    const updateTransaction = (updatedTrx) => {
+        setTransactions(prev => prev.map(t => t.id === updatedTrx.id ? updatedTrx : t));
+        logActivity('atualizou a transação', updatedTrx.id);
+    };
+
+    // Computed Dashboard Metrics
+    const metrics = useMemo(() => {
+        // Finance
+        const revenue = transactions.filter(t => t.type === 'in' && t.status === 'Pago').reduce((acc, curr) => acc + curr.amount, 0);
+        const expenses = transactions.filter(t => t.type === 'out').reduce((acc, curr) => acc + curr.amount, 0);
+        const balance = revenue - expenses;
+        const mrr = transactions.filter(t => t.type === 'in' && t.category === 'recurring').reduce((acc, curr) => acc + curr.amount, 0);
+
+        // Leads
+        const totalLeads = boardData.cards.length;
+        const newLeads = boardData.cards.filter(c => c.columnId === 'new').length;
+        const closedDeals = boardData.cards.filter(c => c.columnId === 'closed').length;
+        const conversionRate = totalLeads > 0 ? ((closedDeals / totalLeads) * 100).toFixed(1) : 0;
+
+        return {
+            revenue,
+            expenses,
+            balance,
+            mrr,
+            totalLeads,
+            newLeads,
+            closedDeals,
+            conversionRate
+        };
+    }, [transactions, boardData]);
+
+    return (
+        <CrmContext.Provider value={{
+            transactions, addTransaction, deleteTransaction, updateTransaction,
+            boardData, updateBoardData, addLead, updateLead, deleteLead,
+            activities, logActivity,
+            metrics
+        }}>
+            {children}
+        </CrmContext.Provider>
+    );
+};
