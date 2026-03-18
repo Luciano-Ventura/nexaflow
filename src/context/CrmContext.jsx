@@ -69,8 +69,28 @@ export const CrmProvider = ({ children }) => {
         }
     };
 
+    const fetchTransactions = async () => {
+        const { data, error } = await supabase.from('financeiro').select('*').order('created_at', { ascending: false });
+        if (data) {
+            setTransactions(data.map(t => ({
+                id: t.id,
+                date: new Date(t.created_at).toLocaleDateString('pt-BR', { day: '2-digit', month: 'short', year: 'numeric' }),
+                client: t.cliente || '',
+                desc: t.descricao || '',
+                type: t.tipo === 'entrada' ? 'in' : 'out',
+                amount: Number(t.valor) || 0,
+                status: t.status ? t.status.charAt(0).toUpperCase() + t.status.slice(1) : 'Pendente',
+                category: t.frequencia || 'one-time',
+                rawDate: t.created_at
+            })));
+        } else if (error) {
+            console.error("Erro buscar financeiro:", error);
+        }
+    };
+
     useEffect(() => {
         fetchLeads();
+        fetchTransactions();
 
         const leadsSubscription = supabase
             .channel('custom-all-channel')
@@ -80,6 +100,13 @@ export const CrmProvider = ({ children }) => {
                 (payload) => {
                     console.log('Realtime DB Change:', payload);
                     fetchLeads();
+                }
+            )
+            .on(
+                'postgres_changes',
+                { event: '*', schema: 'public', table: 'financeiro' },
+                () => {
+                    fetchTransactions();
                 }
             )
             .subscribe();
@@ -97,9 +124,20 @@ export const CrmProvider = ({ children }) => {
     // ---------------------------
 
     // Actions
-    const addTransaction = (trx) => {
-        setTransactions(prev => [trx, ...prev]);
+    const addTransaction = async (trx) => {
+        setTransactions(prev => [{ ...trx, id: 'temp-' + Date.now() }, ...prev]);
         logActivity('registrou uma nova transação', `de R$ ${trx.amount}`);
+
+        const { error } = await supabase.from('financeiro').insert([{
+            cliente: trx.client,
+            descricao: trx.desc,
+            tipo: trx.type === 'in' ? 'entrada' : 'saida',
+            valor: trx.amount,
+            status: (trx.status || 'pendente').toLowerCase(),
+            frequencia: trx.category
+        }]);
+        if (error) console.error("Erro inserindo finance", error);
+        setTimeout(fetchTransactions, 500);
     };
 
     const updateBoardData = (newData, draggedCardId, targetColumnId) => {
@@ -168,14 +206,29 @@ export const CrmProvider = ({ children }) => {
         if (error) console.error("Erro deletando lead", error);
     };
 
-    const deleteTransaction = (trxId) => {
+    const deleteTransaction = async (trxId) => {
         setTransactions(prev => prev.filter(t => t.id !== trxId));
         logActivity('excluiu uma transação', trxId);
+
+        const { error } = await supabase.from('financeiro').delete().eq('id', trxId);
+        if (error) console.error("Erro ao deletar", error);
     };
 
-    const updateTransaction = (updatedTrx) => {
+    const updateTransaction = async (updatedTrx) => {
         setTransactions(prev => prev.map(t => t.id === updatedTrx.id ? updatedTrx : t));
         logActivity('atualizou a transação', updatedTrx.id);
+
+        if (typeof updatedTrx.id !== 'string' || !updatedTrx.id.startsWith('temp-')) {
+            const { error } = await supabase.from('financeiro').update({
+                cliente: updatedTrx.client,
+                descricao: updatedTrx.desc,
+                tipo: updatedTrx.type === 'in' ? 'entrada' : 'saida',
+                valor: updatedTrx.amount,
+                status: (updatedTrx.status || 'pendente').toLowerCase(),
+                frequencia: updatedTrx.category
+            }).eq('id', updatedTrx.id);
+            if (error) console.error("Erro ao atualizar", error);
+        }
     };
 
     // Computed Dashboard Metrics
