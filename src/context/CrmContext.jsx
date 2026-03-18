@@ -125,19 +125,25 @@ export const CrmProvider = ({ children }) => {
 
     // Actions
     const addTransaction = async (trx) => {
-        setTransactions(prev => [{ ...trx, id: 'temp-' + Date.now() }, ...prev]);
+        const optimisticId = 'temp-trx-' + Date.now();
+        setTransactions(prev => [{ ...trx, id: optimisticId }, ...prev]);
         logActivity('registrou uma nova transação', `de R$ ${trx.amount}`);
 
-        const { error } = await supabase.from('financeiro').insert([{
+        const { data, error } = await supabase.from('financeiro').insert([{
             cliente: trx.client,
             descricao: trx.desc,
             tipo: trx.type === 'in' ? 'entrada' : 'saida',
             valor: trx.amount,
             status: (trx.status || 'pendente').toLowerCase(),
             frequencia: trx.category
-        }]);
-        if (error) console.error("Erro inserindo finance", error);
-        setTimeout(fetchTransactions, 500);
+        }]).select();
+
+        if (error) {
+            console.error("Erro inserindo finance", error);
+            setTransactions(prev => prev.filter(t => t.id !== optimisticId));
+        } else if (data && data[0]) {
+            setTransactions(prev => prev.map(t => t.id === optimisticId ? { ...t, id: data[0].id } : t));
+        }
     };
 
     const updateBoardData = (newData, draggedCardId, targetColumnId) => {
@@ -149,14 +155,17 @@ export const CrmProvider = ({ children }) => {
     };
 
     const addLead = async (lead) => {
+        const optimisticId = 'temp-lead-' + Date.now();
+        const optimisticLead = { ...lead, id: optimisticId };
+
         // Optimistic UI updates avoid waiting for network
         setBoardData(prev => ({
             ...prev,
-            cards: [lead, ...prev.cards]
+            cards: [optimisticLead, ...prev.cards]
         }));
         logActivity('adicionou o lead', lead.name);
 
-        const { error } = await supabase.from('leads').insert([{
+        const { data, error } = await supabase.from('leads').insert([{
             nome: lead.name,
             telefone: lead.phone,
             empresa: lead.company,
@@ -164,11 +173,17 @@ export const CrmProvider = ({ children }) => {
             status: STATUS_MAP[lead.columnId] || 'novo',
             email: lead.email || null,
             cnpj: lead.cnpj || null
-        }]);
-        if (error) console.error("Erro ao inserir lead no Supabase:", error);
+        }]).select();
 
-        // Refresh to get actual UUIDs from DB instead of temporary frontend IDs
-        setTimeout(fetchLeads, 500);
+        if (error) {
+            console.error("Erro ao inserir lead no Supabase:", error);
+            setBoardData(prev => ({ ...prev, cards: prev.cards.filter(c => c.id !== optimisticId) }));
+        } else if (data && data[0]) {
+            setBoardData(prev => ({
+                ...prev,
+                cards: prev.cards.map(c => c.id === optimisticId ? { ...c, id: data[0].id } : c)
+            }));
+        }
     };
 
     const updateLead = async (updatedLead) => {

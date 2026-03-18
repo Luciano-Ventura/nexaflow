@@ -3,7 +3,7 @@ import { useState } from 'react';
 import { useCrm } from '../../context/CrmContext';
 
 const FinancePage = () => {
-    const { transactions, addTransaction, updateTransaction, metrics } = useCrm();
+    const { transactions, addTransaction, updateTransaction, metrics, boardData } = useCrm();
     const [isAddingTrx, setIsAddingTrx] = useState(false);
     const [isEditingTrx, setIsEditingTrx] = useState(false);
     const [formData, setFormData] = useState({ client: '', desc: '', type: 'in', amount: '', status: 'Pago', category: 'recurring' });
@@ -31,6 +31,7 @@ const FinancePage = () => {
         if (isEditingTrx) {
             updateTransaction({
                 ...formData,
+                client: formData.client === 'Outro' ? formData.customClient : formData.client,
                 amount: parseFloat(formData.amount) || 0
             });
         } else {
@@ -38,6 +39,7 @@ const FinancePage = () => {
                 id: `TRX-${100 + transactions.length + 1}`,
                 date: new Date().toLocaleDateString('pt-BR', { day: '2-digit', month: 'short', year: 'numeric' }).replace('.', ''),
                 ...formData,
+                client: formData.client === 'Outro' ? formData.customClient : formData.client,
                 amount: parseFloat(formData.amount) || 0
             };
             addTransaction(newTrx);
@@ -45,7 +47,7 @@ const FinancePage = () => {
 
         setIsAddingTrx(false);
         setIsEditingTrx(false);
-        setFormData({ client: '', desc: '', type: 'in', amount: '', status: 'Pago', category: 'recurring' });
+        setFormData({ client: '', customClient: '', desc: '', type: 'in', amount: '', status: 'Pago', category: 'recurring' });
     };
 
     const handleEditTrx = (trx) => {
@@ -95,7 +97,7 @@ const FinancePage = () => {
             <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
                 <div style={{ padding: '1.5rem', borderBottom: '1px solid var(--border-color)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <h3 className="text-xl font-bold">Transações Recentes</h3>
-                    <button onClick={() => { setIsEditingTrx(false); setFormData({ client: '', desc: '', type: 'in', amount: '', status: 'Pago', category: 'recurring' }); setIsAddingTrx(true); }} className="btn btn-primary" style={{ padding: '0.5rem 1rem', fontSize: '0.875rem' }}>+ Nova Transação</button>
+                    <button onClick={() => { setIsEditingTrx(false); setFormData({ client: '', customClient: '', desc: '', type: 'in', amount: '', status: 'Pago', category: 'recurring' }); setIsAddingTrx(true); }} className="btn btn-primary" style={{ padding: '0.5rem 1rem', fontSize: '0.875rem' }}>+ Nova Transação</button>
                 </div>
                 <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
                     <thead style={{ backgroundColor: 'var(--bg-primary)', borderBottom: '1px solid var(--border-color)' }}>
@@ -155,7 +157,16 @@ const FinancePage = () => {
                         <form onSubmit={handleAddTrx} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
                             <div>
                                 <label style={{ display: 'block', fontSize: '0.875rem', marginBottom: '0.25rem', fontWeight: 500 }}>Cliente / Fornecedor</label>
-                                <input type="text" required className="input-field" value={formData.client} onChange={e => setFormData({ ...formData, client: e.target.value })} />
+                                <select required className="input-field" value={formData.client} onChange={e => setFormData({ ...formData, client: e.target.value })}>
+                                    <option value="" disabled>Selecione ou adicione um...</option>
+                                    {boardData.cards.map(lead => (
+                                        <option key={lead.id} value={lead.name}>{lead.name} {lead.company ? `(${lead.company})` : ''}</option>
+                                    ))}
+                                    <option value="Outro">Outro Cliente / Despesa Livre</option>
+                                </select>
+                                {formData.client === 'Outro' && (
+                                    <input type="text" required placeholder="Nome do favorecido..." className="input-field" style={{ marginTop: '0.5rem' }} value={formData.customClient || ''} onChange={e => setFormData({ ...formData, customClient: e.target.value })} />
+                                )}
                             </div>
                             <div>
                                 <label style={{ display: 'block', fontSize: '0.875rem', marginBottom: '0.25rem', fontWeight: 500 }}>Descrição</label>
